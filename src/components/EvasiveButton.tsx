@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
@@ -52,6 +53,8 @@ export default function EvasiveButton({ screenId, activeScreen, label, className
   const baseRef = useRef({ left: 0, top: 0, width: 0, height: 0 })
   const armedAtRef = useRef(0)
   const lastMoveRef = useRef(0)
+  // target of the very first dodge, applied after the portal node mounts
+  const pendingTargetRef = useRef<{ px: number; py: number } | null>(null)
 
   const isActive = activeScreen === screenId
 
@@ -93,13 +96,16 @@ export default function EvasiveButton({ screenId, activeScreen, label, className
         const r = el.getBoundingClientRect()
         baseRef.current = { left: r.left, top: r.top, width: r.width, height: r.height }
         posRef.current = { tx: 0, ty: 0, rot: 0 }
+        // Stash the dodge target; the first move is applied in a layout effect
+        // once the portal node exists, so the resting transform is committed
+        // first and the move smoothly transitions instead of snapping.
+        pendingTargetRef.current = {
+          px: clientX ?? r.left + r.width / 2 + (Math.random() - 0.5) * 50,
+          py: clientY ?? r.top + r.height / 2 + (Math.random() - 0.5) * 50,
+        }
         detachedRef.current = true
         setDetached(true)
         setPos({ tx: 0, ty: 0, rot: 0 })
-        // Mount at rest first, then dodge on the next frame so the move animates.
-        const px = clientX ?? r.left + r.width / 2 + (Math.random() - 0.5) * 50
-        const py = clientY ?? r.top + r.height / 2 + (Math.random() - 0.5) * 50
-        requestAnimationFrame(() => moveAway(px, py))
       } else {
         const base = baseRef.current
         const cx = base.left + posRef.current.tx + base.width / 2
@@ -112,6 +118,20 @@ export default function EvasiveButton({ screenId, activeScreen, label, className
     [moveAway],
   )
 
+  // First dodge: once the portal node has mounted at its resting position,
+  // force a reflow to commit that position as the transition's start, then
+  // move on the next frame so it glides instead of snapping.
+  useLayoutEffect(() => {
+    if (!detached) return
+    const target = pendingTargetRef.current
+    if (!target) return
+    pendingTargetRef.current = null
+    const el = portalRef.current
+    if (el) void el.getBoundingClientRect()
+    const id = requestAnimationFrame(() => moveAway(target.px, target.py))
+    return () => cancelAnimationFrame(id)
+  }, [detached, moveAway])
+
   // Reset to inline when the screen leaves; arm the settle window when it enters.
   useEffect(() => {
     if (isActive) {
@@ -119,6 +139,7 @@ export default function EvasiveButton({ screenId, activeScreen, label, className
     } else {
       armedAtRef.current = 0
       lastMoveRef.current = 0
+      pendingTargetRef.current = null
       if (detachedRef.current) {
         detachedRef.current = false
         setDetached(false)
